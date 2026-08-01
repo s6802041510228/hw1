@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>HTML Adventure: ผจญภัยในอาณาจักรเว็บไซต์</title>
     <style>
+
         /* ========================================
            02 CSS และ Responsive
         ======================================== */
@@ -448,6 +449,10 @@
 </head>
 <body>
 
+
+
+
+
 <div id="app">
     <!-- ========================================
          03 ระบบเปลี่ยนหน้าจอ (Screens)
@@ -618,6 +623,7 @@
         </div>
     </div>
 
+    
     <!-- Screen: Map -->
     <div id="screen-map" class="screen">
         <div class="map-header">
@@ -1162,7 +1168,7 @@ window.addEventListener("online", () => { if(gameState.dirty) saveGameToCloud("o
 function setupMenu() {
     el('menu-name').innerText = gameState.nickname;
     el('menu-avatar').innerText = gameState.avatar;
-    if (gameState.currentStage > 1 || gameState.currentCheckpoint > 0) {
+    if (gameState.currentStage > 1 || gameState.currentCheckpoint > 0 || (gameState.playerPosition && gameState.playerPosition.x > 100)) {
         el('btn-continue').style.display = 'inline-flex';
         el('menu-stage').innerText = gameState.currentStage;
     }
@@ -1572,29 +1578,57 @@ function createStage(stageNum) {
         }
     }
     
-    // Ensure solid ground beneath interactables (signs, questions, checkpoints)
-    [300, 800, 1200, 1500, 1600, 2000].forEach(px => {
-        floorParts.push({ x: px - 50, y: ch - 50, w: 150, h: 100, type: 'ground' });
-    });
-    
     lvl.platforms.push(...floorParts);
 
-    // Distribute 4 knowledge signs evenly
-    for(let i=1; i<=4; i++) {
-        let isRead = gameState.collectedKnowledgeSigns.includes(`s${stageNum}_${i}`);
-        let xPos = (config.length / 5) * i - 300;
-        lvl.signs.push({ x: xPos, y: ch - 100, w: 40, h: 50, id: `s${stageNum}_${i}`, read: isRead });
+    // Helper to place items on existing platforms instead of creating new ones
+    function snapToPlatform(idealX, width, height) {
+        // 1. Try to find a platform that directly contains idealX
+        let validPlats = lvl.platforms.filter(p => idealX >= p.x && idealX + width <= p.x + p.w);
+        if (validPlats.length > 0) {
+            // Pick the highest one (smallest y)
+            validPlats.sort((a, b) => a.y - b.y);
+            return { x: idealX, y: validPlats[0].y - height };
+        }
+        
+        // 2. Fallback: find the closest platform
+        let bestPlat = null;
+        let minDist = Infinity;
+        for (let p of lvl.platforms) {
+            if (p.w >= width) {
+                let cx = p.x + p.w / 2;
+                let dist = Math.abs(cx - idealX);
+                if (dist < minDist) {
+                    minDist = dist;
+                    bestPlat = p;
+                }
+            }
+        }
+        if (bestPlat) {
+            let x = Math.max(bestPlat.x, Math.min(idealX, bestPlat.x + bestPlat.w - width));
+            return { x: x, y: bestPlat.y - height };
+        }
+        return { x: idealX, y: ch - 100 };
     }
 
-    // Distribute 4 questions evenly
+    // 1. Distribute 4 knowledge signs evenly
+    for(let i=1; i<=4; i++) {
+        let isRead = gameState.collectedKnowledgeSigns.includes(`s${stageNum}_${i}`);
+        let idealX = (config.length / 5) * i - 300;
+        let pos = snapToPlatform(idealX, 40, 50);
+        lvl.signs.push({ x: pos.x, y: pos.y, w: 40, h: 50, id: `s${stageNum}_${i}`, read: isRead });
+    }
+
+    // 2. Distribute 4 questions evenly
     for(let i=1; i<=4; i++) {
         let isAnswered = gameState.answeredQuestionIds.includes(`q${stageNum}_${i}`);
-        let xPos = (config.length / 5) * i;
-        lvl.questions.push({ x: xPos, y: ch - 150, w: 40, h: 40, id: `q${stageNum}_${i}`, active: !isAnswered });
+        let idealX = (config.length / 5) * i;
+        let pos = snapToPlatform(idealX, 40, 40);
+        lvl.questions.push({ x: pos.x, y: pos.y, w: 40, h: 40, id: `q${stageNum}_${i}`, active: !isAnswered });
     }
 
     // Checkpoints
-    lvl.checkpoints.push({ x: 1500, y: ch - 100, w: 40, h: 50, id: 1, passed: false });
+    let cpPos = snapToPlatform(1500, 40, 50);
+    lvl.checkpoints.push({ x: cpPos.x, y: cpPos.y, w: 40, h: 50, id: 1, passed: false });
 
     return lvl;
 }
@@ -1623,9 +1657,14 @@ async function startGame(mode, stageNum) {
         markGameDirty();
     } else {
         // mode === "continue" || mode === true
-        // Load from checkpoint if any, otherwise start at beginning of current stage
-        player.x = gameState.currentCheckpoint > 0 ? gameState.currentCheckpoint : 50;
-        player.y = 300;
+        // Resume from exact saved position if available
+        if (gameState.playerPosition && gameState.playerPosition.x > 100) {
+            player.x = gameState.playerPosition.x;
+            player.y = gameState.playerPosition.y;
+        } else {
+            player.x = gameState.currentCheckpoint > 0 ? 1500 : 50;
+            player.y = 300;
+        }
         if(stageNum) gameState.currentStage = stageNum;
     }
     
@@ -1714,7 +1753,8 @@ function togglePause() {
     } else {
         el('modal-pause').classList.remove('active');
         gameRuntime.lastTime = performance.now(); // reset delta
-        requestAnimationFrame(gameLoop);
+        if (reqAnim) cancelAnimationFrame(reqAnim);
+        reqAnim = requestAnimationFrame(gameLoop);
     }
 }
 
@@ -2117,26 +2157,31 @@ const KNOWLEDGE_DB = {
     "s1_1": { title: "เว็บไซต์คืออะไร?", content: "<b>Website</b> คือ กลุ่มของเว็บเพจหนึ่งหน้าหรือหลายหน้าที่มีเนื้อหาเกี่ยวข้องกัน เชื่อมโยงกันด้วยลิงก์ และเผยแพร่ผ่านอินเทอร์เน็ต", summary: "Website = กลุ่มเว็บเพจเชื่อมโยงกัน" },
     "s1_2": { title: "คำศัพท์ที่ควรรู้", content: "<b>Web Page</b> = เอกสาร 1 หน้า<br><b>Home Page</b> = หน้าแรกสุดของเว็บ<br><b>Browser</b> = โปรแกรมเปิดเว็บ<br><b>Server</b> = เครื่องให้บริการ", summary: "จำคำศัพท์พื้นฐานให้ดี!" },
     "s1_3": { title: "หลักการทำงาน", content: "1. ผู้ใช้พิมพ์ URL<br>2. เบราว์เซอร์ส่งคำขอ (Request)<br>3. Server ประมวลผล<br>4. Server ส่งไฟล์ HTML กลับ<br>5. เบราว์เซอร์แสดงผล", summary: "ร้องขอ -> ประมวลผล -> แสดงผล" },
+    "s1_4": { title: "ประเภทของเว็บไซต์", content: "<b>Web 1.0:</b> อ่านได้อย่างเดียว (Static)<br><b>Web 2.0:</b> อ่านและเขียนโต้ตอบได้ (Dynamic)<br><b>Web 3.0:</b> ยุคแห่ง AI และ Blockchain", summary: "ยุคของเว็บ 1.0 - 3.0" },
     
     // ด่านที่ 2
     "s2_1": { title: "HTML คืออะไร?", content: "<b>HTML (HyperText Markup Language)</b><br>เป็นภาษามาร์กอัปที่ใช้กำหนดโครงสร้างและส่วนประกอบของหน้าเว็บไซต์<br><i>*ไม่ใช่ภาษาโปรแกรมคำนวณ*</i>", summary: "HTML = โครงสร้างหน้าเว็บ" },
     "s2_2": { title: "หน้าที่ของ HTML", content: "ใช้แบ่งส่วนของหน้าเว็บไซต์ (ส่วนหัว, เนื้อหาหลัก), กำหนดประเภทเนื้อหา, สร้างการเชื่อมโยง (ลิงก์), แสดงรูปภาพ, และรับข้อมูลจากผู้ใช้", summary: "กำหนดหน้าตาและเนื้อหาเบื้องต้น" },
     "s2_3": { title: "HTML vs CSS vs JS", content: "<b>HTML</b> = โครงสร้างเนื้อหา (เสาบ้าน)<br><b>CSS</b> = กำหนดสีรูปแบบ (ทาสีตกแต่ง)<br><b>JavaScript</b> = เพิ่มการทำงานโต้ตอบ (ระบบไฟฟ้า)", summary: "3 ภาษาทำงานร่วมกัน" },
+    "s2_4": { title: "เครื่องมือสร้างเว็บ", content: "<b>Text Editor</b><br>สามารถใช้โปรแกรมง่ายๆ อย่าง Notepad (Windows) หรือโปรแกรมสำหรับเขียนโค้ดโดยเฉพาะ เช่น VS Code, Sublime Text", summary: "ใช้ Notepad หรือ VS Code" },
     
     // ด่านที่ 3
     "s3_1": { title: "โครงสร้างเอกสาร HTML", content: "เริ่มต้นด้วย <b>&lt;!DOCTYPE html&gt;</b> ประกาศเป็น HTML5<br>และมี Tag หลักคือ <b>&lt;html&gt;</b> ครอบคลุมเนื้อหาทั้งหมด", summary: "html คือ Tag คลุมทั้งหมด" },
     "s3_2": { title: "ส่วนหัว &lt;head&gt;", content: "<b>&lt;head&gt;</b> เก็บข้อมูลเกี่ยวกับหน้าเว็บไซต์ที่ไม่ได้แสดงเป็นเนื้อหาหลัก เช่น ชื่อหน้าเว็บ <b>&lt;title&gt;</b> ที่จะไปแสดงบนแท็บเบราว์เซอร์", summary: "<head> เก็บข้อมูลเบื้องหลัง" },
     "s3_3": { title: "ส่วนเนื้อหา &lt;body&gt;", content: "<b>&lt;body&gt;</b> เก็บเนื้อหาที่ผู้ใช้งานมองเห็นทั้งหมด เช่น ข้อความ รูปภาพ ลิงก์ ตาราง และแบบฟอร์ม", summary: "<body> คือสิ่งที่ตามองเห็น" },
+    "s3_4": { title: "การบันทึกไฟล์", content: "<b>การบันทึกไฟล์ HTML</b><br>ต้องตั้งชื่อไฟล์ให้มีนามสกุลเป็น <b>.html</b> หรือ <b>.htm</b><br>เช่น <i>index.html</i> (นิยมใช้เป็นหน้าแรกสุดของเว็บ)", summary: "นามสกุลไฟล์ต้องเป็น .html" },
 
     // ด่านที่ 4
     "s4_1": { title: "Tag ข้อความ", content: "<b>&lt;p&gt;</b> สร้างย่อหน้า<br><b>&lt;br&gt;</b> ขึ้นบรรทัดใหม่<br><b>&lt;strong&gt;</b> เน้นข้อความให้สำคัญ", summary: "<br> ขึ้นบรรทัดใหม่" },
     "s4_2": { title: "Tag หัวเรื่อง (Heading)", content: "มีตั้งแต่ <b>&lt;h1&gt;</b> ถึง <b>&lt;h6&gt;</b><br>โดย &lt;h1&gt; สำคัญที่สุดและมีขนาดใหญ่สุด ควรมีหัวเรื่องหลักที่ชัดเจนในแต่ละหน้า", summary: "h1 ใหญ่สุด h6 เล็กสุด" },
     "s4_3": { title: "Tag ลิงก์และรายการ", content: "<b>&lt;a&gt;</b> ใช้สร้างลิงก์<br><b>&lt;ul&gt;</b> สร้างรายการแบบไม่มีลำดับ<br><b>&lt;ol&gt;</b> สร้างรายการแบบมีตัวเลขเรียง 1,2,3...", summary: "<a> สร้างลิงก์, <ol> สร้างลำดับ" },
+    "s4_4": { title: "แอตทริบิวต์ของลิงก์", content: "<b>Attribute เพิ่มเติมของลิงก์</b><br>ใน Tag &lt;a&gt; นิยมใส่ <b>href</b> เพื่อบอกปลายทาง<br>และ <b>target=\"_blank\"</b> เพื่อเปิดหน้าเว็บในแท็บใหม่", summary: "target=\"_blank\" เปิดแท็บใหม่" },
 
     // ด่านที่ 5
     "s5_1": { title: "Tag รูปภาพ", content: "<b>&lt;img&gt;</b> ใช้แทรกรูปภาพ<br>Attribute สำคัญ:<br><b>src</b> = ระบุชื่อไฟล์รูปภาพ<br><b>alt</b> = คำอธิบายรูปภาพ", summary: "<img src='...'>" },
-    "s5_2": { title: "Tag ตาราง", content: "<b>&lt;table&gt;</b> สร้างตาราง<br><b>&lt;tr&gt;</b> สร้างแถว<br><b>&lt;th&gt;</b> สร้างหัวตาราง<br><b>&lt;td&gt;</b> สร้างช่องข้อมูลธรรมดา", summary: "<tr> แถว, <th> หัว, <td> ข้อมูล" },
-    "s5_3": { title: "การเตรียมไฟล์", content: "ไฟล์ index.html และไฟล์รูปภาพต่างๆ ควรจัดเก็บไว้ใน<b>โฟลเดอร์เดียวกัน</b> เพื่อให้อ้างอิงไฟล์และอัปโหลดได้สะดวก", summary: "เก็บไฟล์ไว้ด้วยกันเสมอ" }
+    "s5_2": { title: "การปรับขนาดรูปภาพ", content: "<b>การปรับขนาด</b><br>สามารถใส่ <b>width</b> (ความกว้าง) และ <b>height</b> (ความสูง) ใน Tag &lt;img&gt; ได้<br>เช่น &lt;img src=\"x.jpg\" width=\"300\"&gt;", summary: "เพิ่ม width / height" },
+    "s5_3": { title: "Tag ตาราง", content: "<b>&lt;table&gt;</b> สร้างตาราง<br><b>&lt;tr&gt;</b> สร้างแถว<br><b>&lt;th&gt;</b> สร้างหัวตาราง<br><b>&lt;td&gt;</b> สร้างช่องข้อมูลธรรมดา", summary: "<tr> แถว, <th> หัว, <td> ข้อมูล" },
+    "s5_4": { title: "การเตรียมไฟล์", content: "ไฟล์ index.html และไฟล์รูปภาพต่างๆ ควรจัดเก็บไว้ใน<b>โฟลเดอร์เดียวกัน</b> เพื่อให้อ้างอิงไฟล์และอัปโหลดได้สะดวก", summary: "เก็บไฟล์ไว้ด้วยกันเสมอ" }
 };
 
 const QUESTION_DB = [
@@ -2164,6 +2209,7 @@ const QUESTION_DB = [
         {left: "<body>", right: "เก็บเนื้อหาที่ผู้ใช้งานมองเห็น"},
         {left: "<title>", right: "ชื่อเว็บไซต์ที่ปรากฏบนแท็บ"}
     ] },
+    { id: "q3_4", stage: 3, type: "choice", q: "การบันทึกไฟล์หน้าแรกของเว็บไซต์ ควรตั้งชื่อไฟล์และนามสกุลอย่างไร?", choices: ["index.txt", "home.exe", "index.html", "page.doc"], ans: 2 },
     
     // ด่านที่ 4: การใช้งาน Tag พื้นฐาน (ข้อความและลิงก์)
     { id: "q4_1", stage: 4, type: "dragdrop", q: "นำ Tag ไปเติมให้ตรงกับหน้าที่", text: "ขึ้นบรรทัดใหม่ใช้ Tag [] ส่วนการเน้นข้อความสำคัญใช้ Tag []", choices: ["<br>", "<strong>", "<p>", "<em>"], ans: ["<br>", "<strong>"] },
@@ -2207,7 +2253,8 @@ function closeSignModal() {
     el('modal-sign').classList.remove('active');
     gameRuntime.isPaused = false;
     gameRuntime.lastTime = performance.now();
-    requestAnimationFrame(gameLoop);
+    if (reqAnim) cancelAnimationFrame(reqAnim);
+    reqAnim = requestAnimationFrame(gameLoop);
 }
 
 window.currentQuestionState = null;
@@ -2701,7 +2748,8 @@ function closeQuestionModal() {
     
     gameRuntime.isPaused = false;
     gameRuntime.lastTime = performance.now();
-    requestAnimationFrame(gameLoop); // FIX: Restart game loop
+    if (reqAnim) cancelAnimationFrame(reqAnim);
+    reqAnim = requestAnimationFrame(gameLoop); // FIX: Restart game loop
 }
 
 /* ========================================
